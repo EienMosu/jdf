@@ -1,0 +1,87 @@
+name: Windows proof
+
+on:
+  push:
+    branches: [proof/windows]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cli-convert:
+    name: jdf convert sample.pdf (${{ matrix.case }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: published-cli-0.2.9
+            repo: uurtech/jdf
+            ref: master
+            expect: broken
+          - case: upstream-master
+            repo: uurtech/jdf
+            ref: master
+            expect: broken
+          - case: fix-branch
+            repo: EienMosu/jdf
+            ref: fix/pdf-import-worker-file-url
+            expect: works
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.ref }}
+
+      - name: Show checked-out commit
+        shell: pwsh
+        run: git log -1 --format="%H %an %s"
+
+      - uses: pnpm/action-setup@v4
+        if: matrix.case != 'published-cli-0.2.9'
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install workspace
+        if: matrix.case != 'published-cli-0.2.9'
+        run: pnpm install --frozen-lockfile
+
+      - name: Convert spec/examples/sample.pdf
+        id: convert
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "sample.jdf"
+          if ("${{ matrix.case }}" -eq "published-cli-0.2.9") {
+            npx -y @uurtech/jdf-cli@0.2.9 convert spec/examples/sample.pdf -o $out --json
+          } else {
+            pnpm --filter @uurtech/jdf-cli start convert ../../spec/examples/sample.pdf -o $out --json
+          }
+
+      - name: Validate output
+        id: validate
+        if: steps.convert.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "sample.jdf"
+          if (-not (Test-Path $out)) { Write-Error "no output file"; exit 1 }
+          (Get-FileHash $out -Algorithm SHA256).Hash
+          if ("${{ matrix.case }}" -eq "published-cli-0.2.9") {
+            npx -y @uurtech/jdf-cli@0.2.9 validate $out
+          } else {
+            pnpm --filter @uurtech/jdf-cli start validate $out
+          }
+
+      - name: Check against expectation (${{ matrix.expect }})
+        shell: pwsh
+        run: |
+          $works = "${{ steps.convert.outcome }}" -eq "success" -and "${{ steps.validate.outcome }}" -eq "success"
+          $actual = if ($works) { "works" } else { "broken" }
+          Write-Host "case=${{ matrix.case }} expected=${{ matrix.expect }} actual=$actual"
+          if ($actual -ne "${{ matrix.expect }}") { exit 1 }
